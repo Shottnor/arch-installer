@@ -96,7 +96,7 @@ mount /dev/${DISK}1 /mnt/boot
 
 # Install essential packages
 echo "Installing base packages..."
-pacstrap /mnt base linux linux-firmware btrfs-progs vim networkmanager
+pacstrap /mnt base base-devel linux linux-firmware git linux-firmware-marvell btrfs-progs vim networkmanager grub efibootmgr grub-btrfs timeshift sudo openssh
 
 # Generate fstab
 echo "Generating fstab..."
@@ -126,8 +126,16 @@ passwd
 # Enable NetworkManager
 systemctl enable NetworkManager
 
+#Install linux-surface
+curl -s https://raw.githubusercontent.com/linux-surface/linux-surface/master/pkg/keys/surface.asc \
+    | sudo pacman-key --add -
+sudo pacman-key --finger 56C464BAAC421453
+sudo pacman-key --lsign-key 56C464BAAC421453
+echo -e "\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/" >> /etc/pacman.conf
+sudo pacman -Syu
+sudo pacman -S linux-surface linux-surface-headers iptsd
+
 # Install bootloader
-pacman -S --noconfirm grub efibootmgr
 mkdir -p /boot/efi
 mount /dev/${DISK}1 /boot/efi
 if [ "$ENCRYPT_DISK" == "yes" ]; then
