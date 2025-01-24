@@ -29,6 +29,9 @@ echo "Wiping disk and creating new partition table on /dev/$DISK..."
 sgdisk --zap-all /dev/$DISK
 wipefs --all /dev/$DISK
 
+# Encrypt the disk
+read -p "Do you want to encrypt the root partition? (yes/no): " ENCRYPT_DISK
+
 # Create partitions
 parted -s /dev/$DISK mklabel gpt
 
@@ -53,6 +56,15 @@ fi
 # Root partition
 parted -s /dev/$DISK mkpart primary ext4 $SWAP_END 100%
 
+if [ "$ENCRYPT_DISK" == "yes" ]; then
+    echo "Encrypting the root partition..."
+    cryptsetup luksFormat /dev/${DISK}3
+    cryptsetup open /dev/${DISK}3 cryptroot
+    ROOT_PART=/dev/mapper/cryptroot
+else
+    ROOT_PART=/dev/${DISK}3
+fi
+
 # Format partitions
 echo "Formatting partitions..."
 mkfs.fat -F32 /dev/${DISK}1
@@ -60,32 +72,76 @@ if [ "$CREATE_SWAP" == "yes" ]; then
     mkswap /dev/${DISK}2
     swapon /dev/${DISK}2
 fi
-mkfs.ext4 /dev/${DISK}3
-
-# Display results
-echo "Disk /dev/$DISK has been formatted and partitioned as follows:"
-lsblk /dev/$DISK
+mkfs.btrfs -f $ROOT_PART
 
 # Mount partitions for Arch Linux installation
-read -p "Would you like to mount the partitions now for Arch Linux installation? (yes/no): " MOUNT_CONFIRM
-if [ "$MOUNT_CONFIRM" == "yes" ]; then
-    mkdir -p /mnt
-    if [ "$CREATE_SWAP" == "yes" ]; then
-        mount /dev/${DISK}3 /mnt
-    else
-        mount /dev/${DISK}2 /mnt
-    fi
-    mkdir -p /mnt/boot
-    mount /dev/${DISK}1 /mnt/boot
+echo "Mounting root partition with Btrfs subvolumes..."
+mount $ROOT_PART /mnt
+btrfs subvolume create /mnt/@
+btrfs subvolume create /mnt/@home
+btrfs subvolume create /mnt/@var
+btrfs subvolume create /mnt/@tmp
+btrfs subvolume create /mnt/@snapshots
+umount /mnt
 
-    echo "Partitions mounted at /mnt and /mnt/boot. Proceed with Arch Linux installation."
-else
-    echo "You can mount the partitions later using the following commands:"
-    echo "  mount /dev/${DISK}3 /mnt"
-    echo "  mkdir -p /mnt/boot && mount /dev/${DISK}1 /mnt/boot"
-    if [ "$CREATE_SWAP" == "yes" ]; then
-        echo "  swapon /dev/${DISK}2"
-    fi
+mount -o compress=zstd,subvol=@ $ROOT_PART /mnt
+mkdir -p /mnt/{boot,home,var,tmp,.snapshots}
+mount -o compress=zstd,subvol=@home $ROOT_PART /mnt/home
+mount -o compress=zstd,subvol=@var $ROOT_PART /mnt/var
+mount -o compress=zstd,subvol=@tmp $ROOT_PART /mnt/tmp
+mount -o compress=zstd,subvol=@snapshots $ROOT_PART /mnt/.snapshots
+
+mkdir -p /mnt/boot
+mount /dev/${DISK}1 /mnt/boot
+
+# Install essential packages
+echo "Installing base packages..."
+pacstrap /mnt base linux linux-firmware btrfs-progs vim networkmanager
+
+# Generate fstab
+echo "Generating fstab..."
+genfstab -U /mnt >> /mnt/etc/fstab
+
+# Chroot into the new system and configure
+arch-chroot /mnt /bin/bash <<EOF
+
+# Set timezone
+ln -sf /usr/share/zoneinfo/$(curl -s http://ip-api.com/line?fields=timezone) /etc/localtime
+hwclock --systohc
+
+# Set localization
+echo "en_US.UTF-8 UTF-8" > /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" > /etc/locale.conf
+
+# Set hostname
+read -p "Enter the hostname for this system: " HOSTNAME
+echo "$HOSTNAME" > /etc/hostname
+echo -e "127.0.0.1\tlocalhost\n::1\tlocalhost\n127.0.1.1\t$HOSTNAME.localdomain\t$HOSTNAME" >> /etc/hosts
+
+# Set root password
+echo "Set root password:"
+passwd
+
+# Enable NetworkManager
+systemctl enable NetworkManager
+
+# Install bootloader
+pacman -S --noconfirm grub efibootmgr
+mkdir -p /boot/efi
+mount /dev/${DISK}1 /boot/efi
+if [ "$ENCRYPT_DISK" == "yes" ]; then
+    sed -i 's/GRUB_CMDLINE_LINUX=""/GRUB_CMDLINE_LINUX="cryptdevice=UUID=$(blkid -s UUID -o value /dev/${DISK}3):cryptroot root=$ROOT_PART"/' /etc/default/grub
+fi
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --bootloader-id=GRUB
+grub-mkconfig -o /boot/grub/grub.cfg
+
+EOF
+
+# Unmount partitions and finish
+umount -R /mnt
+if [ "$CREATE_SWAP" == "yes" ]; then
+    swapoff /dev/${DISK}2
 fi
 
-echo "Done."
+echo "Installation complete. You can now reboot into your new Arch Linux system."
