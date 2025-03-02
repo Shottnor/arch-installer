@@ -6,5 +6,5 @@ sudo pacman-key --finger 56C464BAAC421453
 sudo pacman-key --lsign-key 56C464BAAC421453
 echo -e "\n[linux-surface]\nServer = https://pkg.surfacelinux.com/arch/" >> /etc/pacman.conf
 sudo pacman -Syu
-sudo pacman -S linux-surface linux-surface-headers iptsd
+sudo pacman -S linux-surface linux-surface-headers iptsd linux-firmware-marvell
 grub-mkconfig -o /boot/grub/grub.cfg
